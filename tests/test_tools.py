@@ -1,42 +1,33 @@
 import json
 
-import pytest
+from multi_agent_orchestrator.tools import (
+    calculate_incident_priority,
+    search_incident_knowledge,
+)
 
-from incident_agent.tools import search_technical_knowledge
 
-
-@pytest.mark.asyncio
-async def test_tool_returns_structured_evidence_for_specific_component():
-    raw = await search_technical_knowledge.ainvoke(
-        {"query": "Redis memoria y TTL", "purpose": "confirmar umbral crítico"}
+def test_research_tool_returns_relevant_sources() -> None:
+    payload = search_incident_knowledge.invoke(
+        {"query": "errores checkout pagos latencia", "limit": 3}
     )
-    result = json.loads(raw)
+    findings = json.loads(payload)
 
-    assert result["status"] == "ok"
-    assert result["results"][0]["source"] == "guia-redis-idempotencia"
-    assert "0,92" in result["results"][0]["evidence"]
+    assert len(findings) == 3
+    assert "runbook-checkout-01" in {item["source_id"] for item in findings}
+    assert all(item["metrics"] for item in findings)
 
 
-@pytest.mark.asyncio
-async def test_tool_requests_a_more_specific_query():
-    raw = await search_technical_knowledge.ainvoke(
-        {"query": "incidente general", "purpose": "buscar evidencia"}
+def test_priority_tool_is_reproducible() -> None:
+    payload = calculate_incident_priority.invoke(
+        {
+            "error_rate_pct": 12.4,
+            "latency_p95_ms": 2450,
+            "affected_users": 1840,
+            "duration_minutes": 18,
+        }
     )
-    result = json.loads(raw)
+    result = json.loads(payload)
 
-    assert result["status"] == "incomplete"
-    assert result["known_components"] == ["API de pagos", "Redis", "PostgreSQL"]
-
-
-@pytest.mark.asyncio
-async def test_tool_requires_one_component_per_call():
-    raw = await search_technical_knowledge.ainvoke(
-        {"query": "Redis y API de pagos", "purpose": "comparar umbrales"}
-    )
-    result = json.loads(raw)
-
-    assert result["status"] == "incomplete"
-    assert set(result["matched_sources"]) == {
-        "guia-redis-idempotencia",
-        "runbook-api-pagos",
-    }
+    assert result["priority"] == "P1"
+    assert result["risk_score"] == 81.3
+    assert set(result["components"]) == {"errors", "latency", "users", "duration"}

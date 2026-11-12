@@ -3,19 +3,17 @@ requires = ["hatchling>=1.27"]
 build-backend = "hatchling.build"
 
 [project]
-name = "persistent-incident-agent"
-version = "0.5.0"
-description = "Agente ReAct asíncrono con LangGraph y memoria persistente en SQLite."
+name = "multi-agent-orchestrator"
+version = "0.6.0"
+description = "Orquestador jerarquico de investigacion y analisis construido con LangGraph."
 readme = "README.md"
 requires-python = ">=3.12"
 license = { text = "MIT" }
-authors = [{ name = "Diego Chiang Meléndez" }]
+authors = [{ name = "Diego Chiang Melendez" }]
 dependencies = [
-  "aiosqlite>=0.22,<1",
   "langchain-core>=1.2,<2",
   "langchain-openai>=1.0,<2",
   "langgraph>=1.2,<2",
-  "langgraph-checkpoint-sqlite>=3.1,<4",
   "pydantic>=2.10,<3",
   "pydantic-settings>=2.7,<3",
   "python-dotenv>=1.0,<2",
@@ -31,10 +29,10 @@ dev = [
 ]
 
 [project.scripts]
-incident-agent = "incident_agent.cli:main"
+multi-agent = "multi_agent_orchestrator.cli:main"
 
 [tool.hatch.build.targets.wheel]
-packages = ["src/incident_agent"]
+packages = ["src/multi_agent_orchestrator"]
 
 [tool.pytest.ini_options]
 addopts = "-q --strict-markers"

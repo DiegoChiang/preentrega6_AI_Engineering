@@ -1,6 +1,6 @@
-"""Punto de entrada del agente persistente."""
+"""Punto de entrada ejecutable."""
 
-from incident_agent.cli import main
+from multi_agent_orchestrator.cli import main
 
 if __name__ == "__main__":
     main()

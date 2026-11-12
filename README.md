@@ -1,115 +1,139 @@
-# Agente de diagnóstico con memoria persistente
+# Orquestador multi-agente especializado
 
-Agente ReAct asíncrono para investigar incidentes técnicos. El modelo decide cuándo consultar una
-herramienta, procesa cada resultado y puede repetir la búsqueda antes de producir una conclusión.
-El historial se conserva en SQLite mediante un `thread_id`.
-
-## Arquitectura
-
-```mermaid
-flowchart LR
-    START --> Modelo
-    Modelo -->|tool_calls| Herramienta
-    Herramienta --> Modelo
-    Modelo -->|respuesta final| END
-```
-
-El estado `AgentState` hereda de `MessagesState`. El nodo `model` usa un LLM vinculado mediante
-`bind_tools()`, `tools_condition` decide si continúa hacia `ToolNode` y la arista de retorno permite
-varias iteraciones. La ejecución se limita a diez pasos para impedir ciclos ilimitados.
+Prototipo de analisis de incidentes que separa investigacion, computo, validacion y sintesis. Un
+supervisor jerarquico decide que especialista debe intervenir en cada paso y solo habilita la
+respuesta final cuando la evidencia y el analisis superan el control de suficiencia.
 
 ## Capacidades
 
-- Selección autónoma de herramientas basada en el mensaje del usuario.
-- Herramienta propia `search_technical_knowledge` con esquema Pydantic y docstring descriptivo.
-- Una consulta independiente por componente técnico.
-- Corrección y nuevo intento cuando una búsqueda resulta insuficiente o falla.
-- Persistencia asíncrona con `AsyncSqliteSaver` sobre SQLite.
-- Continuidad de conversación por `thread_id`.
-- Traza JSON con nodos, mensajes, llamadas, resultados y respuesta final.
+- Supervisor con decisiones estructuradas y rutas condicionales de LangGraph.
+- Investigador con una herramienta exclusiva de busqueda documental simulada.
+- Analista con una herramienta exclusiva para calcular prioridad P1-P4.
+- Estado compartido tipado que conserva aportes, fuentes, decisiones y resultado de validacion.
+- Contexto acotado por rol: cada especialista recibe su instruccion y los datos imprescindibles.
+- Validador determinista para detectar falta de fuentes, citas inexistentes o calculos invalidos.
+- Limite de decisiones del supervisor para evitar ciclos infinitos.
 
-## Instalación
+## Topologia
+
+```mermaid
+flowchart TD
+    START([START]) --> S[Supervisor]
+    S -->|falta evidencia| R[Researcher]
+    S -->|evidencia disponible| A[Analyst]
+    S -->|investigacion + analisis| V[Validator]
+    S -->|resultado aprobado| Y[Synthesizer]
+    R -->|hallazgos y fuentes| S
+    A -->|prioridad y recomendacion| S
+    V -->|aprobado o feedback| S
+    Y --> END([END])
+```
+
+La topologia jerarquica concentra las decisiones de flujo en un solo nodo y mantiene separadas las
+responsabilidades. El investigador no calcula severidad; el analista no busca documentos; el
+validador no genera evidencia. La sintesis consume un resultado ya verificado.
+
+## Estado compartido
+
+`OrchestratorState` hereda de `MessagesState` e incorpora:
+
+| Campo | Funcion |
+| --- | --- |
+| `next_agent` | Ruta seleccionada por el supervisor. |
+| `supervisor_instruction` | Tarea puntual para el siguiente nodo. |
+| `research_findings` | Evidencia estructurada con identificadores de fuente. |
+| `analysis_result` | Prioridad, puntaje, factores, recomendacion y fuentes usadas. |
+| `contributions` | Registro acumulativo de aportes por agente. |
+| `validation_feedback` | Errores que requieren una nueva delegacion. |
+| `task_completed` | Condicion obligatoria para entrar a la sintesis. |
+| `supervisor_steps` | Contador que limita el ciclo de supervision. |
+
+Las listas `contributions` y `completed_agents` usan reducers aditivos. Los resultados de dominio se
+mantienen como datos estructurados, no como historial conversacional formateado.
+
+## Manejo de conflictos
+
+El validador compara las fuentes citadas por el analista con las fuentes recuperadas, exige al menos
+dos evidencias y verifica el rango del puntaje. Si encuentra una inconsistencia, escribe feedback en
+el estado y el supervisor devuelve la tarea al investigador o al analista. Las guardas del supervisor
+impiden sintetizar si faltan prerrequisitos, incluso cuando el modelo propone una ruta incorrecta.
+
+## Estructura
+
+```text
+.
+|-- agents/
+|   |-- research_agent.py
+|   `-- analysis_agent.py
+|-- artifacts/
+|   `-- delegation_trace.json
+|-- docs/
+|   `-- architecture.md
+|-- src/multi_agent_orchestrator/
+|   |-- agents/
+|   |-- graph.py
+|   |-- state.py
+|   |-- supervisor.py
+|   |-- synthesis.py
+|   |-- tools.py
+|   `-- validation.py
+|-- tests/
+|-- demo.ipynb
+|-- main.py
+`-- pyproject.toml
+```
+
+Los archivos de `agents/` en la raiz facilitan la inspeccion directa del entregable; la implementacion
+instalable vive en `src/multi_agent_orchestrator/agents/`.
+
+## Instalacion
 
 Requiere Python 3.12 o superior.
 
 ```bash
 python -m venv .venv
+# Windows
 .venv\Scripts\activate
 python -m pip install -e ".[dev]"
 copy .env.example .env
 ```
 
-Configurar la credencial en `.env`:
+Completar `OPENAI_API_KEY` en `.env`. La clave no debe incorporarse al repositorio.
 
-```dotenv
-OPENAI_API_KEY=...
-OPENAI_MODEL=gpt-5.4-mini
-```
-
-`.env`, la base SQLite y sus archivos auxiliares están excluidos del repositorio.
-
-## Uso
-
-Ejecutar una investigación:
+## Ejecucion
 
 ```bash
-incident-agent ask "Investiga el riesgo de memoria de Redis" --thread-id incidente-42
+python main.py --trace
 ```
 
-Continuar la misma conversación:
+Consulta personalizada:
 
 ```bash
-incident-agent ask "¿Qué umbral crítico mencionaste?" --thread-id incidente-42
+python main.py "Investiga el impacto de errores de checkout y determina su prioridad" --trace
 ```
 
-El segundo comando recupera los mensajes guardados para `incidente-42`.
-
-Ejecutar el escenario multi-paso y guardar la traza:
-
-```bash
-incident-agent demo --thread-id demo-multistep --trace artifacts/example_trace.json
-```
-
-La consulta de demostración requiere investigar Redis y la API de pagos por separado. La traza
-incluida en [artifacts/example_trace.json](artifacts/example_trace.json) permite verificar las
-transiciones `model → tools → model`, el número de invocaciones y la respuesta resultante.
-
-## Persistencia
-
-Los checkpoints se guardan por defecto en `state/agent_checkpoints.sqlite`. LangGraph identifica
-cada conversación con esta configuración:
-
-```python
-config = {
-    "configurable": {"thread_id": "incidente-42"},
-    "recursion_limit": 10,
-}
-```
-
-El archivo `.env.example` activa `LANGGRAPH_STRICT_MSGPACK=true` para restringir la deserialización
-de checkpoints.
-
-## Estructura
+La traza esperada contiene esta secuencia:
 
 ```text
-src/incident_agent/
-  graph.py       StateGraph, MessagesState, ToolNode y tools_condition
-  tools.py       herramienta de consulta técnica
-  runner.py      ejecución asíncrona y SqliteSaver
-  trace.py       contratos y serialización de trazas
-  config.py      variables de entorno validadas
-  cli.py         comandos ask y demo
-artifacts/
-  example_trace.json
-tests/
+supervisor -> researcher -> supervisor -> analyst -> supervisor
+-> validator -> supervisor -> synthesizer
 ```
 
-## Calidad
+El notebook [`demo.ipynb`](demo.ipynb) ejecuta el mismo recorrido y presenta la decision de cada
+paso, las fuentes, el calculo, el control de suficiencia y la respuesta final. Una corrida reproducible
+tambien queda registrada en [`artifacts/delegation_trace.json`](artifacts/delegation_trace.json).
+
+## Pruebas
 
 ```bash
 pytest
 ruff check .
 ```
 
-Las pruebas cubren decisiones de herramienta, dos ciclos de consulta, manejo de resultados
-insuficientes, aislamiento por `thread_id`, continuidad de memoria y escritura de la traza.
+Las pruebas usan un modelo programado sin llamadas externas y verifican herramientas, rutas,
+validacion, secuencia completa y limite de supervision.
+
+## Alcance
+
+El prototipo se ejecuta como aplicacion local de consola. No incluye servidor HTTP, cola de trabajos,
+Redis, checkpoints distribuidos, telemetria de produccion ni pausas de aprobacion humana.
