@@ -1,18 +1,32 @@
-# Sistema RAG híbrido en Pinecone
+# Agente de diagnóstico con memoria persistente
 
-Sistema de recuperación de documentación técnica que combina búsqueda semántica en Pinecone
-Serverless con búsqueda léxica BM25. Procesa Markdown, texto, JSON y PDF; conserva metadatos de
-origen; y mide Precision@5 y Recall@5 sobre un Golden Set.
+Agente ReAct asíncrono para investigar incidentes técnicos. El modelo decide cuándo consultar una
+herramienta, procesa cada resultado y puede repetir la búsqueda antes de producir una conclusión.
+El historial se conserva en SQLite mediante un `thread_id`.
 
-## Componentes
+## Arquitectura
 
-- Índice serverless con vectores de 1536 dimensiones y similitud coseno.
-- Embeddings `text-embedding-3-small`.
-- Fragmentos de 600 tokens con solapamiento de 100.
-- Metadatos: fuente, página, categoría, etiquetas, documento y posición del fragmento.
-- Recuperación híbrida con pesos 0,60 semántico y 0,40 BM25.
-- Cinco resultados únicos por consulta.
-- Benchmark reproducible de cinco preguntas.
+```mermaid
+flowchart LR
+    START --> Modelo
+    Modelo -->|tool_calls| Herramienta
+    Herramienta --> Modelo
+    Modelo -->|respuesta final| END
+```
+
+El estado `AgentState` hereda de `MessagesState`. El nodo `model` usa un LLM vinculado mediante
+`bind_tools()`, `tools_condition` decide si continúa hacia `ToolNode` y la arista de retorno permite
+varias iteraciones. La ejecución se limita a diez pasos para impedir ciclos ilimitados.
+
+## Capacidades
+
+- Selección autónoma de herramientas basada en el mensaje del usuario.
+- Herramienta propia `search_technical_knowledge` con esquema Pydantic y docstring descriptivo.
+- Una consulta independiente por componente técnico.
+- Corrección y nuevo intento cuando una búsqueda resulta insuficiente o falla.
+- Persistencia asíncrona con `AsyncSqliteSaver` sobre SQLite.
+- Continuidad de conversación por `thread_id`.
+- Traza JSON con nodos, mensajes, llamadas, resultados y respuesta final.
 
 ## Instalación
 
@@ -25,69 +39,70 @@ python -m pip install -e ".[dev]"
 copy .env.example .env
 ```
 
-Configurar las credenciales en `.env`:
+Configurar la credencial en `.env`:
 
 ```dotenv
 OPENAI_API_KEY=...
-PINECONE_API_KEY=...
+OPENAI_MODEL=gpt-5.4-mini
 ```
 
-El archivo `.env` está excluido del control de versiones.
+`.env`, la base SQLite y sus archivos auxiliares están excluidos del repositorio.
 
 ## Uso
 
-Crear o validar el índice:
+Ejecutar una investigación:
 
 ```bash
-cloud-rag setup
+incident-agent ask "Investiga el riesgo de memoria de Redis" --thread-id incidente-42
 ```
 
-Procesar el corpus y cargarlo en Pinecone:
+Continuar la misma conversación:
 
 ```bash
-python ingest.py
+incident-agent ask "¿Qué umbral crítico mencionaste?" --thread-id incidente-42
 ```
 
-Ejecutar una consulta híbrida:
+El segundo comando recupera los mensajes guardados para `incidente-42`.
+
+Ejecutar el escenario multi-paso y guardar la traza:
 
 ```bash
-cloud-rag query "¿Qué revisar cuando la API de pagos presenta errores 5xx?"
+incident-agent demo --thread-id demo-multistep --trace artifacts/example_trace.json
 ```
 
-Calcular las métricas del Golden Set:
+La consulta de demostración requiere investigar Redis y la API de pagos por separado. La traza
+incluida en [artifacts/example_trace.json](artifacts/example_trace.json) permite verificar las
+transiciones `model → tools → model`, el número de invocaciones y la respuesta resultante.
 
-```bash
-python evaluate.py
+## Persistencia
+
+Los checkpoints se guardan por defecto en `state/agent_checkpoints.sqlite`. LangGraph identifica
+cada conversación con esta configuración:
+
+```python
+config = {
+    "configurable": {"thread_id": "incidente-42"},
+    "recursion_limit": 10,
+}
 ```
 
-También se encuentran disponibles `cloud-rag ingest` y `cloud-rag evaluate`.
-
-## Replicación del índice
-
-La configuración predeterminada crea `incident-knowledge-cloud` en AWS `us-east-1` con un campo
-`embedding` de tipo `dense_vector`, dimensión 1536 y métrica coseno. Puede cambiarse mediante las
-variables `PINECONE_INDEX_NAME`, `PINECONE_NAMESPACE`, `PINECONE_CLOUD` y `PINECONE_REGION`.
-
-La ingesta almacena el texto original junto con `document_id`, `source`, `page`, `category`, `tags`
-y `chunk_index`. El namespace evita mezclar el corpus técnico con datos de otras aplicaciones.
+El archivo `.env.example` activa `LANGGRAPH_STRICT_MSGPACK=true` para restringir la deserialización
+de checkpoints.
 
 ## Estructura
 
 ```text
-data/                         corpus técnico
-evaluation/golden_set.json   preguntas y documentos esperados
-src/incident_intelligence/
-  rag/documents.py            carga multiformato
-  rag/chunking.py             fragmentación reproducible
-  rag/pinecone.py             índice serverless
-  rag/ingestion.py            embeddings y carga por lotes
-  rag/retrieval.py            Pinecone + BM25
-  rag/evaluation.py           Precision@5 y Recall@5
-ingest.py                     ejecutable de ingesta
-evaluate.py                   ejecutable de evaluación
+src/incident_agent/
+  graph.py       StateGraph, MessagesState, ToolNode y tools_condition
+  tools.py       herramienta de consulta técnica
+  runner.py      ejecución asíncrona y SqliteSaver
+  trace.py       contratos y serialización de trazas
+  config.py      variables de entorno validadas
+  cli.py         comandos ask y demo
+artifacts/
+  example_trace.json
+tests/
 ```
-
-La descripción de arquitectura y métricas está en [docs/cloud_rag.md](docs/cloud_rag.md).
 
 ## Calidad
 
@@ -96,5 +111,5 @@ pytest
 ruff check .
 ```
 
-Las pruebas cubren carga y metadatos, fragmentación, configuración del índice, ingesta por lotes,
-fusión de resultados y cálculo del benchmark sin depender de recursos externos.
+Las pruebas cubren decisiones de herramienta, dos ciclos de consulta, manejo de resultados
+insuficientes, aislamiento por `thread_id`, continuidad de memoria y escritura de la traza.

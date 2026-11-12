@@ -1,6 +1,6 @@
-"""Punto de entrada del recuperador híbrido en Pinecone."""
+"""Punto de entrada del agente persistente."""
 
-from incident_intelligence.cli.cloud_rag import main
+from incident_agent.cli import main
 
 if __name__ == "__main__":
     main()
