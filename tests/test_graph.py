@@ -1,5 +1,5 @@
 from multi_agent_orchestrator.runner import run_orchestrator
-from tests.fakes import ScriptedModel
+from tests.fakes import MalformedStructuredModel, ScriptedModel
 
 
 async def test_full_delegation_flow() -> None:
@@ -28,6 +28,19 @@ async def test_full_delegation_flow() -> None:
         "validator",
         "synthesizer",
     ]
+
+
+async def test_malformed_structured_outputs_use_valid_fallbacks() -> None:
+    state, trace = await run_orchestrator(
+        "Investiga el impacto de errores de checkout y calcula su prioridad.",
+        model=MalformedStructuredModel(),
+    )
+
+    assert state["task_completed"] is True
+    assert state["analysis_result"]["priority"] == "P1"
+    assert state["analysis_result"]["drivers"]
+    assert state["final_answer"].startswith("Prioridad P1")
+    assert [item["node"] for item in trace][-1] == "synthesizer"
 
 
 async def test_specialists_keep_bounded_toolsets() -> None:
